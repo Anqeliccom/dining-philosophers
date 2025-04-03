@@ -5,88 +5,63 @@ import org.nsu.syspro.parprog.external.*;
 
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.locks.ReadWriteLock;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public class SolutionThread extends UserThread {
     private static final long THRESHOLD_L1 = 1000;
     private static final long THRESHOLD_L2 = 10000;
 
-    private static final ExecutorService compilerPool = Executors.newFixedThreadPool(2);
-    private static final Cache globalCache = new Cache();
+    private final ExecutorService compilerPool;
+    private final Cache globalCache;
     private final Map<Long, Long> invocationCounts = new HashMap<>();
-    private final Map<Long, CountDownLatch> compilationLatches = new HashMap<>();
+    private final Map<Long, Future<?>> compilationFutures = new HashMap<>();
 
-    public SolutionThread(int compilationThreadBound, ExecutionEngine exec, CompilationEngine compiler, Runnable r) {
+    public SolutionThread(int compilationThreadBound, ExecutionEngine exec, CompilationEngine compiler,
+                          Runnable r, ExecutorService compilerPool, Cache cache) {
         super(compilationThreadBound, exec, compiler, r);
+        this.compilerPool = compilerPool;
+        this.globalCache = cache;
     }
 
     @Override
     public ExecutionResult executeMethod(MethodID id) {
         long methodID = id.id();
-        Cache cache = globalCache;
-        Object[] methodData = cache.get(methodID);
-        invocationCounts.put(methodID, invocationCounts.getOrDefault(methodID, 0L) + 1);
-        int level = (methodData != null) ? (int) methodData[1] : 0;
-        CountDownLatch latch = compilationLatches.get(methodID);
+        Cache.CachedMethod methodData = getFromCache(methodID);
+        long count = updateAndGetInvocationCount(methodID);
+        int level = (methodData != null) ? methodData.level : 0;
 
-        if (invocationCounts.get(methodID) == THRESHOLD_L1 && level == 0) {
-            latch = new CountDownLatch(1);
-            compilationLatches.put(methodID, latch);
-            CountDownLatch finalLatch = latch;
-            compilerPool.submit(() -> {
-                CompiledMethod compiled = compiler.compile_l1(id);
-                cache.put(methodID, compiled, 1);
-                finalLatch.countDown();
-            });
+        if (count == THRESHOLD_L1 && level == 0) {
+            startCompilation(id, 1);
+        } else if (count == THRESHOLD_L2 && level != 2) {
+            startCompilation(id, 2);
         }
 
-        if (invocationCounts.get(methodID) == THRESHOLD_L2 && level != 2) {
-            latch = new CountDownLatch(1);
-            compilationLatches.put(methodID, latch);
-            CountDownLatch finalLatch1 = latch;
-            compilerPool.submit(() -> {
-                CompiledMethod compiled = compiler.compile_l2(id);
-                cache.put(methodID, compiled, 2);
-                finalLatch1.countDown();
-            });
-        }
-
-        if (latch != null) {
+        Future<?> future = compilationFutures.get(methodID);
+        if (future != null) {
             try {
-                latch.await();
-            } catch (InterruptedException e) {
-                throw new RuntimeException("Compilation was interrupted", e);
+                future.get();
+            } catch (InterruptedException | ExecutionException e) {
+                throw new RuntimeException("Compilation failed", e);
             }
         }
-
-        return (methodData != null) ? exec.execute((CompiledMethod) methodData[0]) : exec.interpret(id);
+        return (methodData != null) ? exec.execute(methodData.compiledMethod) : exec.interpret(id);
     }
 
-    private static class Cache {
-        private final Map<Long, Object[]> methodMap = new HashMap<>();
-        private final ReadWriteLock lock = new ReentrantReadWriteLock();
+    private Cache.CachedMethod getFromCache(long methodID) {
+        return globalCache.get(methodID);
+    }
 
-        public void put(long id, CompiledMethod compiledCode, int level) {
-            lock.writeLock().lock();
-            try {
-                Object[] existing = methodMap.get(id);
-                int currentLevel = (existing != null) ? (int) existing[1] : 0;
-                if (level > currentLevel) {
-                    methodMap.put(id, new Object[]{compiledCode, level});
-                }
-            } finally {
-                lock.writeLock().unlock();
-            }
-        }
+    private long updateAndGetInvocationCount(long methodID) {
+        long newCount = invocationCounts.getOrDefault(methodID, 0L) + 1;
+        invocationCounts.put(methodID, newCount);
+        return newCount;
+    }
 
-        public Object[] get(long id) {
-            lock.readLock().lock();
-            try {
-                return methodMap.get(id);
-            } finally {
-                lock.readLock().unlock();
-            }
-        }
+    private void startCompilation(MethodID id, int level) {
+        long methodID = id.id();
+        Future<?> future = compilerPool.submit(() -> {
+            CompiledMethod compiled = (level == 1) ? compiler.compile_l1(id) : compiler.compile_l2(id);
+            globalCache.put(methodID, compiled, level);
+        });
+        compilationFutures.put(methodID, future);
     }
 }
