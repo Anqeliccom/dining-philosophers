@@ -6,9 +6,11 @@ import org.nsu.syspro.parprog.examples.CachingTopTierJIT;
 import org.nsu.syspro.parprog.examples.Interpreter;
 import org.nsu.syspro.parprog.external.CompilationEngine;
 import org.nsu.syspro.parprog.external.ExecutionEngine;
+import org.nsu.syspro.parprog.solution.Cache;
 import org.nsu.syspro.parprog.solution.SolutionThread;
 
 import java.time.Duration;
+import java.util.concurrent.ExecutorService;
 
 public abstract class TestLevels {
 
@@ -19,18 +21,18 @@ public abstract class TestLevels {
         return 3;
     }
 
-    public static UserThread createUserThread(ExecutionEngine e, CompilationEngine c, Runnable r) {
+    public static UserThread createUserThread(ExecutionEngine e, CompilationEngine c, Runnable r, ExecutorService compilerPool, Cache cache) {
         // return new Interpreter(e, c, r);
         // return new AdaptiveCompiler(e, c, r);
         // return new CachingTopTierJIT(e, c, r);
-        return new SolutionThread(compilationThreadBound(), e, c, r);
+        return new SolutionThread(compilationThreadBound(), e, c, r, compilerPool, cache);
     }
 
     enum Level {
         EASY, MEDIUM, HARD
     }
 
-    private static final Level CURRENT_LEVEL = Level.HARD;
+    private static final Level CURRENT_LEVEL = Level.MEDIUM;
 
     public static boolean easyEnabled() {
         return CURRENT_LEVEL.ordinal() >= Level.EASY.ordinal();

@@ -3,6 +3,7 @@ package org.nsu.syspro.parprog.helpers;
 import org.nsu.syspro.parprog.UserThread;
 import org.nsu.syspro.parprog.external.*;
 import org.nsu.syspro.parprog.solution.EasyFastTest;
+import org.nsu.syspro.parprog.solution.Cache;
 
 import java.time.Duration;
 import java.util.*;
@@ -42,7 +43,12 @@ public class TestEnvironment {
 
     private final long idOnStart = UserThread.firstUnusedThreadNum();
 
+    private final ExecutorService compilerPool;
+    private final Cache globalCache;
+
     public TestEnvironment(Duration interpret, Duration l1Exec, Duration l2Exec, Duration l1comp, Duration l2comp) {
+        this.compilerPool = Executors.newFixedThreadPool(2);
+        this.globalCache = new Cache();
         engine = new TestExecutionEngine(interpret, l1Exec, l2Exec);
         compiler = new TestCompilationEngine(l1comp, l2comp);
         taskExecutor = new TestExecutor();
@@ -171,7 +177,9 @@ public class TestEnvironment {
     public void terminate(int seconds) throws InterruptedException {
         utilityPool.shutdown();
 
-        final boolean terminated = awaitTerminationSeconds(seconds);
+        compilerPool.shutdown();
+
+        boolean terminated = awaitTerminationSeconds(seconds);
         // no deadlock/hang
         assertTrue(terminated);
 
@@ -377,17 +385,19 @@ public class TestEnvironment {
 
         public UserThread execute(Runnable command) {
             final UserThread thread = EasyFastTest.createUserThread(engine, compiler, () -> {
-                command.run();
+                    command.run();
+                    synchronized (running) {
+                        final boolean wasRegistered = running.remove(UserThread.current());
+                        assertTrue(wasRegistered);
 
-                synchronized (running) {
-                    final boolean wasRegistered = running.remove(UserThread.current());
-                    assertTrue(wasRegistered);
-
-                    if (running.isEmpty()) {
-                        running.notify();
+                        if (running.isEmpty()){
+                            running.notify();
+                        }
                     }
-                }
-            });
+                },
+                compilerPool,
+                globalCache
+            );
 
             synchronized (running) {
                 assert !utilityPool.isShutdown();
